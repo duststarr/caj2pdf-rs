@@ -30,8 +30,8 @@ pub fn parse_page_text(data: &[u8], page_style: bool) -> String {
                 if off + 4 > len {
                     break;
                 }
-                let b1 = data[off + 1];
                 let b0 = data[off];
+                let b1 = data[off + 1];
                 push_gbk(&mut out, b0, b1);
                 off += 4;
             }
@@ -45,8 +45,8 @@ pub fn parse_page_text(data: &[u8], page_style: bool) -> String {
                     if data[off + 1] == 0x80 {
                         break;
                     }
-                    let b1 = data[off + 3];
                     let b0 = data[off + 2];
+                    let b1 = data[off + 3];
                     push_gbk(&mut out, b0, b1);
                     off += 4;
                 }
@@ -66,10 +66,11 @@ pub fn parse_page_text(data: &[u8], page_style: bool) -> String {
     out
 }
 
+/// Decode one GBK character from the two bytes stored little-endian in the
+/// file. `b0` is the low byte, `b1` is the high byte, so the numeric code is
+/// `b1 * 256 + b0`. GBK decoding itself expects `[high, low]`, hence the
+/// `[b1, b0]` byte order below.
 fn push_gbk(out: &mut String, b0: u8, b1: u8) {
-    // The original Python code maps a small set of "GBK extension" code points
-    // that show up as OCR artifacts in HN files: 0xA38D/0xA38A → line break,
-    // 0xA389 → tab, 0xA3A0 → space.
     let code = ((b1 as u16) << 8) | (b0 as u16);
     match code {
         0xA389 => out.push('\t'),
@@ -77,7 +78,7 @@ fn push_gbk(out: &mut String, b0: u8, b1: u8) {
         0xA38D => out.push('\r'),
         0xA3A0 => out.push(' '),
         _ => {
-            let bytes = [b0, b1];
+            let bytes = [b1, b0];
             let (cow, _, had_repl) = encoding_rs::GBK.decode(&bytes);
             if !had_repl && !cow.is_empty() {
                 out.push_str(&cow);
