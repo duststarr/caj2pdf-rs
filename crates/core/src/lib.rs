@@ -4,7 +4,8 @@
 //!
 //! This crate is the single source of truth for the data model shared by every
 //! other crate in the workspace. It is intentionally dependency-light: only
-//! `byteorder` and `encoding_rs` are required at runtime.
+//! `byteorder`, `encoding_rs`, `flate2`, `thiserror`, and `tracing` are required
+//! at runtime.
 //!
 //! ## High-level data flow
 //!
@@ -51,6 +52,9 @@ pub enum CajError {
     #[error("unsupported or unknown file type (magic bytes: {0:?})")]
     UnknownFormat([u8; 4]),
 
+    #[error("unsupported feature: {0}")]
+    Unsupported(&'static str),
+
     #[error("malformed {format:?} file: {message}")]
     Malformed { format: FileFormat, message: String },
 
@@ -62,6 +66,16 @@ pub enum CajError {
 
     #[error("zlib decompression failed: {0}")]
     Zlib(String),
+}
+
+impl CajError {
+    /// Convenience constructor for the [`CajError::Malformed`] variant.
+    pub fn malformed(format: FileFormat, message: impl Into<String>) -> Self {
+        CajError::Malformed {
+            format,
+            message: message.into(),
+        }
+    }
 }
 
 pub type CajResult<T> = std::result::Result<T, CajError>;
@@ -77,7 +91,7 @@ pub type CajResult<T> = std::result::Result<T, CajError>;
 pub enum FileFormat {
     /// Older CAJ format (GBK-encoded ASCII magic at offset 0).
     Caj,
-    /// HN8 / HN format (GBK-encoded ASCII magic at offset 0).
+    /// HN format (GBK-encoded ASCII magic or `HN\xc8\x00` magic at offset 0).
     Hn,
     /// "C8" magic byte followed by 18 bytes of header before page data.
     C8,
@@ -139,13 +153,17 @@ pub enum ImageKind {
 /// metadata needed to decode it.
 #[derive(Debug, Clone)]
 pub struct RawImage {
+    /// The on-disk codec.
     pub kind: ImageKind,
+    /// Raw image bytes (including the 48-byte CNKI header for JBIG / JBIG2).
     pub data: Vec<u8>,
     /// Native pixel width, in 1/300 inch coordinate units. The original
     /// documents use a fixed 300 DPI, so this is the same as the rendered size
     /// in points.
     pub width_px: u32,
-    /// Native pixel height.
+    /// Native pixel height. May be reported as negative by the original
+    /// Python parser for upside-down JPEGs; the Rust parser folds that into
+    /// [`ImageKind::Jpeg::upside_down`].
     pub height_px: u32,
 }
 
@@ -210,20 +228,28 @@ pub struct CajDocument {
     pub(crate) page_count: u32,
     pub(crate) toc: Vec<OutlineEntry>,
     /// Offsets into the file that locate the page-data array. These are
-    /// format-specific and interpreted by `crate::pages`.
+    /// format-specific and interpreted by [`crate::hn::iter_pages`].
     pub(crate) layout: Layout,
 }
 
 /// Format-specific page-data layout.
+///
+/// For HN there are two sub-variants:
+///
+/// * `with_toc = true`  – the long-form HN file, with an outline at 0x158.
+/// * `with_toc = false` – the short-form HN file (`HN\xc8\x00` magic), no
+///   outline, page-info table at 0xD8.
 #[derive(Debug, Clone)]
 pub(crate) enum Layout {
     Caj {
+        /// Offset of the first byte of the embedded PDF.
         pdf_start_offset: u64,
-        page_info_table_offset: u64,
     },
     Hn {
+        /// Offset of the first 20-byte PageInfo struct.
         page_info_table_offset: u64,
-        toc_end_offset: u64,
+        /// True if the document has an outline tree at 0x158.
+        with_toc: bool,
     },
     C8 {
         page_info_table_offset: u64,
@@ -235,6 +261,11 @@ pub(crate) enum Layout {
 
 impl CajDocument {
     /// Open a file, detect its format, and read the page count and outline.
+    ///
+    /// # Errors
+    /// * [`CajError::Io`] – the file could not be read.
+    /// * [`CajError::UnknownFormat`] – the 4-byte magic is none of the six
+    ///   known formats.
     pub fn open<P: AsRef<Path>>(path: P) -> CajResult<Self> {
         let path = path.as_ref().to_path_buf();
         let mut f = std::fs::File::open(&path)?;
@@ -242,7 +273,10 @@ impl CajDocument {
         use std::io::Read;
         f.read_exact(&mut header)?;
 
-        let format = detect_format(&header, &mut f)?;
+        // For HN we need to know which sub-variant we have *before* we can
+        // pick a layout. The `with_toc` flag is derived from the magic
+        // bytes: `HN\xc8\x00` ⇒ no outline, anything else ⇒ outline.
+        let (format, hn_with_toc) = detect_format_inner(&header, &mut f)?;
         drop(f);
 
         let mut doc = Self {
@@ -250,7 +284,7 @@ impl CajDocument {
             format,
             page_count: 0,
             toc: Vec::new(),
-            layout: detect_layout(format)?,
+            layout: detect_layout(format, hn_with_toc)?,
         };
 
         doc.read_page_count_and_toc()?;
@@ -277,8 +311,36 @@ impl CajDocument {
         &self.toc
     }
 
+    /// The on-disk path the document was opened from.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Iterate the pages of an HN / C8 document, returning the parsed text and
+    /// raw image blocks for each.
+    ///
+    /// For CAJ / PDF / KDH / TEB, returns
+    /// [`CajError::Unsupported`]: use [`CajDocument::extract_pdf`] for CAJ
+    /// and PDF, or rely on [`crate::convert::convert`] for the high-level
+    /// conversion.
+    pub fn pages(&self) -> CajResult<Vec<Page>> {
+        crate::hn::iter_pages(self)
+    }
+
+    /// Extract the embedded PDF blob of a CAJ document.
+    ///
+    /// The returned byte slice is the raw PDF as it sits inside the CAJ
+    /// container, without any repair. For most workflows you want
+    /// [`crate::convert::convert`] instead, which repairs the xref table and
+    /// adds outlines.
+    pub fn extract_pdf(&self) -> CajResult<Vec<u8>> {
+        match self.format {
+            FileFormat::Caj => crate::caj::extract_pdf(self),
+            FileFormat::Pdf => std::fs::read(&self.path).map_err(CajError::from),
+            _ => Err(CajError::Unsupported(
+                "extract_pdf is only supported for CAJ and PDF documents",
+            )),
+        }
     }
 
     pub(crate) fn read_page_count_and_toc(&mut self) -> CajResult<()> {
@@ -294,29 +356,29 @@ impl CajDocument {
 // Format detection helper (private)
 // ---------------------------------------------------------------------------
 
+pub(crate) mod convert;
+
 mod caj;
 mod hn;
 mod hn_page;
 
-pub(crate) fn detect_format<R: std::io::Read + std::io::Seek>(
+fn detect_format_inner<R: std::io::Read + std::io::Seek>(
     header: &[u8; 4],
-    f: &mut R,
-) -> CajResult<FileFormat> {
+    _f: &mut R,
+) -> CajResult<(FileFormat, Option<bool>)> {
     use std::io::SeekFrom;
 
     // C8: first byte 0xC8, with a tiny header before page data.
     if header[0] == 0xC8 {
-        return Ok(FileFormat::C8);
+        return Ok((FileFormat::C8, None));
     }
 
-    // HN8: starts with ASCII "HN" then binary bytes.
+    // HN with binary magic: "HN" + 0xC8 0x00 ⇒ short-form HN (no TOC).
     if &header[0..2] == b"HN" {
-        // The first 4 bytes are "HN" + 2 bytes. C8 (HN with binary) has
-        // 0xC8 0x00 in those two bytes.
         if &header[2..4] == b"\xc8\x00" {
-            return Ok(FileFormat::Hn);
+            return Ok((FileFormat::Hn, Some(false)));
         }
-        // Otherwise fall through to GBK magic check below.
+        // Fall through to the GBK magic check.
     }
 
     // Otherwise, interpret the first 4 bytes as GBK-decoded ASCII.
@@ -330,33 +392,54 @@ pub(crate) fn detect_format<R: std::io::Read + std::io::Seek>(
     // Trim NUL padding (e.g. "CAJ\0").
     let trimmed = decoded.trim_end_matches('\0').to_string();
 
-    match trimmed.as_str() {
-        "CAJ" => Ok(FileFormat::Caj),
-        "HN" => Ok(FileFormat::Hn),
-        "%PDF" => Ok(FileFormat::Pdf),
-        "KDH " => Ok(FileFormat::Kdh),
-        "TEB" => Ok(FileFormat::Teb),
+    let result = match trimmed.as_str() {
+        "CAJ" => Ok((FileFormat::Caj, None)),
+        // The long-form HN file has a GBK-decoded "HN" magic (the two
+        // bytes following "HN" are usually 0x00 0x00, or any pair that
+        // decodes to empty / non-ASCII PUA characters that get trimmed).
+        "HN" => Ok((FileFormat::Hn, Some(true))),
+        "%PDF" => Ok((FileFormat::Pdf, None)),
+        "KDH " => Ok((FileFormat::Kdh, None)),
+        "TEB" => Ok((FileFormat::Teb, None)),
         _ => {
-            // Some HN files look like "H" + binary. Re-check by sampling
-            // further into the header.
-            let _ = f.seek(SeekFrom::Start(0));
+            // Some HN files have an unusual 2-byte suffix that does not
+            // GBK-decode cleanly. We've already handled the
+            // "HN\xc8\x00" case above; everything else is unknown.
+            let _ = _f.seek(SeekFrom::Start(0));
             Err(CajError::UnknownFormat(*header))
         }
-    }
+    };
+    result
 }
 
-pub(crate) fn detect_layout(format: FileFormat) -> CajResult<Layout> {
+/// Public re-export of the internal detection helper, used by the integration
+/// tests in `tests/format_detection.rs`.
+///
+/// The second return value is `Some(true)` / `Some(false)` for HN files,
+/// where it indicates whether the document carries an outline tree. For
+/// every other format the value is `None`.
+#[doc(hidden)]
+pub fn detect_format<R: std::io::Read + std::io::Seek>(
+    header: &[u8; 4],
+    f: &mut R,
+) -> CajResult<(FileFormat, Option<bool>)> {
+    detect_format_inner(header, f)
+}
+
+pub(crate) fn detect_layout(
+    format: FileFormat,
+    hn_with_toc: Option<bool>,
+) -> CajResult<Layout> {
     // For Caj/Hn/C8, the page-data offset depends on the page count, which is
     // only known after reading the page-count field. We store a placeholder
     // here and update it inside `read_meta` once the page count is known.
     Ok(match format {
         FileFormat::Caj => Layout::Caj {
             pdf_start_offset: 0,
-            page_info_table_offset: 0,
         },
         FileFormat::Hn => Layout::Hn {
             page_info_table_offset: 0,
-            toc_end_offset: 0,
+            with_toc: hn_with_toc.unwrap_or(true),
         },
         FileFormat::C8 => Layout::C8 {
             page_info_table_offset: 0,

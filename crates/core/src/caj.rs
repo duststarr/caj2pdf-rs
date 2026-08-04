@@ -1,38 +1,59 @@
 //! CAJ-format specific reading logic.
 //!
 //! See `docs/format-analysis.md` for the byte-level layout this module parses.
+//!
+//! A CAJ file wraps an (often slightly mangled) PDF document together with a
+//! page count and an optional outline. The page count lives at offset 0x10
+//! and the outline tree starts at 0x110. The PDF itself is pointed to by a
+//! 4-byte little-endian offset at 0x14, which in turn points to another
+//! 4-byte LE offset – the start of the PDF bytes inside the container.
 
-use crate::{CajDocument, CajError, CajResult, OutlineEntry};
+use crate::{CajDocument, CajError, CajResult, Layout, OutlineEntry};
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::io::{Read, Seek, SeekFrom};
+
+const PAGE_COUNT_OFFSET: u64 = 0x10;
+const PDF_START_POINTER_OFFSET: u64 = 0x14;
+const TOC_COUNT_OFFSET: u64 = 0x110;
+const TOC_ENTRY_SIZE: usize = 0x134;
 
 /// Read the page count and (optionally) the table of contents for a CAJ file,
 /// then patch the document's layout with the actual offsets.
 pub(crate) fn read_meta(doc: &mut CajDocument) -> CajResult<()> {
-    use crate::Layout;
     let mut f = std::fs::File::open(&doc.path)?;
 
-    // Page count is at offset 0x10 (4 bytes, little-endian).
-    f.seek(SeekFrom::Start(0x10))?;
-    let page_count = f.read_u32::<LittleEndian>()?;
-    doc.page_count = page_count;
+    // Page count is at offset 0x10.
+    f.seek(SeekFrom::Start(PAGE_COUNT_OFFSET))?;
+    let page_count = f.read_i32::<LittleEndian>()?;
+    if page_count < 0 {
+        return Err(CajError::malformed(
+            doc.format,
+            format!("page count must be non-negative, got {page_count}"),
+        ));
+    }
+    doc.page_count = page_count as u32;
 
-    // The original Python code uses 0x110 as the start of the TOC block. We
-    // follow the same convention.
-    f.seek(SeekFrom::Start(0x110))?;
-    let toc_count = f.read_u32::<LittleEndian>()?;
+    // Outline tree.
+    f.seek(SeekFrom::Start(TOC_COUNT_OFFSET))?;
+    let toc_count = f.read_i32::<LittleEndian>()?;
+    if toc_count < 0 {
+        return Err(CajError::malformed(
+            doc.format,
+            format!("toc count must be non-negative, got {toc_count}"),
+        ));
+    }
     doc.toc = Vec::with_capacity(toc_count as usize);
-    for i in 0..toc_count {
-        let offset = 0x110u64 + 4 + (i as u64) * 0x134;
+    for i in 0..toc_count as u64 {
+        let offset = TOC_COUNT_OFFSET + 4 + i * TOC_ENTRY_SIZE as u64;
         f.seek(SeekFrom::Start(offset))?;
-        let mut buf = [0u8; 0x134];
+        let mut buf = vec![0u8; TOC_ENTRY_SIZE];
         f.read_exact(&mut buf)?;
         // Layout of each entry (308 bytes):
         //   0x000..0x100  title (256 bytes GBK, NUL-terminated)
         //   0x100..0x118  unknown 24 bytes
         //   0x118..0x124  page number (12 ASCII bytes, NUL-terminated)
         //   0x124..0x130  unknown 12 bytes
-        //   0x130         level (4-byte int32, little-endian)
+        //   0x130..0x134  level (4-byte int32, little-endian)
         let ttl_end = buf[..0x100].iter().position(|&b| b == 0).unwrap_or(0x100);
         let title_raw = &buf[..ttl_end];
         let (title, _, _) = encoding_rs::GBK.decode(title_raw);
@@ -51,18 +72,65 @@ pub(crate) fn read_meta(doc: &mut CajDocument) -> CajResult<()> {
         doc.toc.push(OutlineEntry { title, page, level });
     }
 
-    // Patch the layout now that we know the page count.
-    // In CAJ format, the embedded PDF starts at an offset pointed to by
-    // (0x14) and the page-info table sits immediately after.
-    f.seek(SeekFrom::Start(0x14))?;
+    // Resolve the PDF start. The 4-byte LE integer at 0x14 is an offset
+    // pointing to another 4-byte LE integer that is the actual PDF start.
+    f.seek(SeekFrom::Start(PDF_START_POINTER_OFFSET))?;
     let pdf_start_pointer = f.read_u32::<LittleEndian>()? as u64;
     f.seek(SeekFrom::Start(pdf_start_pointer))?;
     let pdf_start = f.read_u32::<LittleEndian>()? as u64;
-    let page_info_table_offset = pdf_start_pointer + 4; // immediately after the pointer
+
     doc.layout = Layout::Caj {
         pdf_start_offset: pdf_start,
-        page_info_table_offset,
     };
 
     Ok(())
+}
+
+/// Extract the embedded PDF bytes from a CAJ file.
+///
+/// The returned `Vec<u8>` is the raw PDF as it sits inside the container
+/// (no repair, no outline injection). It starts at the resolved PDF offset
+/// and runs through the last `endobj` of the embedded PDF, as in
+/// `cajparser._convert_caj`.
+pub(crate) fn extract_pdf(doc: &CajDocument) -> CajResult<Vec<u8>> {
+    let pdf_start = match doc.layout {
+        Layout::Caj { pdf_start_offset } => pdf_start_offset,
+        _ => {
+            return Err(CajError::Unsupported(
+                "extract_pdf called on a non-CAJ document",
+            ));
+        }
+    };
+
+    // Read the whole file. The original Python scans the file for the
+    // last `endobj`; the cost of a full read is negligible compared to
+    // building the PDF, and it keeps the code simple and correct.
+    let bytes = std::fs::read(&doc.path)?;
+    let endobj = b"endobj";
+    let pdf_end = bytes
+        .windows(endobj.len())
+        .rposition(|w| w == endobj)
+        .map(|p| p + endobj.len())
+        .unwrap_or(bytes.len());
+
+    if (pdf_start as usize) > pdf_end {
+        return Err(CajError::malformed(
+            doc.format,
+            format!(
+                "pdf_start (0x{:x}) is past the last endobj (0x{:x})",
+                pdf_start, pdf_end
+            ),
+        ));
+    }
+
+    let pdf_data = &bytes[pdf_start as usize..pdf_end];
+
+    // The original Python prepends a "%PDF-1.3\r\n" header and appends a
+    // trailing "\r\n". We follow the same convention so downstream mutool /
+    // lopdf tooling sees a well-formed header.
+    let mut out = Vec::with_capacity(pdf_data.len() + 16);
+    out.extend_from_slice(b"%PDF-1.3\r\n");
+    out.extend_from_slice(pdf_data);
+    out.extend_from_slice(b"\r\n");
+    Ok(out)
 }
