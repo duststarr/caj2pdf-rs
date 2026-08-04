@@ -3,6 +3,62 @@
 //!
 //! See `docs/format-analysis.md` for the record grammar.
 
+#[cfg(test)]
+mod tests {
+    use super::parse_page_text;
+
+    /// A new-style 0x8001 record carries a GBK character in two bytes
+    /// (low, high) followed by two unknown bytes. The GBK char `中` is
+    /// `0xD6 0xD0` – we store it little-endian as `[0xD0, 0xD6]`.
+    #[test]
+    fn parse_new_style_single_char() {
+        // 0x8001 0xD0 0xD6 0x00 0x00
+        let data = [0x01, 0x80, 0xD0, 0xD6, 0x00, 0x00];
+        let out = parse_page_text(&data, false);
+        assert_eq!(out, "中");
+    }
+
+    /// `0xA38A` (0x8A, 0xA3 in file) is mapped to `\n` per the OCR
+    /// artifact table.
+    #[test]
+    fn parse_new_style_ocr_linebreak() {
+        // 0x8001 0x8A 0xA3 0x00 0x00
+        let data = [0x01, 0x80, 0x8A, 0xA3, 0x00, 0x00];
+        let out = parse_page_text(&data, false);
+        assert_eq!(out, "\n");
+    }
+
+    /// `0x800A` is a 26-byte figure record; it must not contribute any
+    /// text and must not panic on the trailing bytes.
+    #[test]
+    fn parse_skips_figure_records() {
+        // 0x800A followed by 26 zero bytes
+        let mut data = vec![0x0A, 0x80];
+        data.extend(std::iter::repeat(0u8).take(26));
+        let out = parse_page_text(&data, false);
+        assert_eq!(out, "");
+    }
+
+    /// Old-style (page_style=true) records: a 0x8001 emits a newline,
+    /// then 2 unknown bytes, then a run of 4-byte characters. Each
+    /// 4-byte record has the GBK char at positions [2..4] (low, high)
+    /// in file order; position [1] is 0x80 to signal the next dispatch
+    /// code.
+    #[test]
+    fn parse_old_style_text_run() {
+        // 0x8001 0x00 0x00  [newline emitted]
+        // 0x00 0x00 0xD0 0xD6  [first 4-byte record, GBK char = 中]
+        // 0x00 0x80           [end-of-run marker at position 1]
+        let data = [
+            0x01, 0x80, 0x00, 0x00, //
+            0x00, 0x00, 0xD0, 0xD6, //
+            0x00, 0x80, //
+        ];
+        let out = parse_page_text(&data, true);
+        assert_eq!(out, "\n中");
+    }
+}
+
 /// Parse the text section of an HN page.
 ///
 /// The on-disk format is a flat stream of 2-byte dispatch codes followed by

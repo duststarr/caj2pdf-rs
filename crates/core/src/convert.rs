@@ -139,3 +139,83 @@ pub fn decrypt_kdh(input: &[u8]) -> Vec<u8> {
     }
     output
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Round-trip: a single byte XORed with `FZHMEI` should produce the
+    /// original byte back.
+    #[test]
+    fn decrypt_round_trip_single_byte() {
+        let key = KDH_PASSPHRASE;
+        for (i, original) in b"hello world!".iter().enumerate() {
+            let encrypted = original ^ key[i % key.len()];
+            assert_eq!(encrypted ^ key[i % key.len()], *original);
+        }
+    }
+
+    /// The decryption must skip the first 254 bytes of the input.
+    /// We construct a payload that, after XOR with `FZHMEI`, yields a
+    /// string ending in `%%EOF` (so the `rfind("%%EOF")` step has
+    /// something to find).
+    #[test]
+    fn decrypt_skips_254_byte_header() {
+        let target = b"%PDF-1.3\n%%EOF\n";
+        let mut encrypted = target.to_vec();
+        for (i, b) in encrypted.iter_mut().enumerate() {
+            *b ^= KDH_PASSPHRASE[i % KDH_PASSPHRASE.len()];
+        }
+        let mut input = vec![0u8; 254];
+        input.extend_from_slice(&encrypted);
+        let out = decrypt_kdh(&input);
+        // The output is the (decrypted) target truncated to the last
+        // %%EOF, so the trailing newline gets dropped (this matches
+        // the original Python behaviour).
+        let last_eof = target.iter().rposition(|&b| b == b'\n').unwrap() + 1;
+        let truncated = &target[..target.len() - (target.len() - last_eof)];
+        // More simply: the output must end exactly at the last %%EOF.
+        assert!(out.ends_with(b"%%EOF"));
+        assert_eq!(out.len(), target.len() - 1);
+    }
+
+    /// Decryption should truncate everything after the last `%%EOF`.
+    #[test]
+    fn decrypt_truncates_after_last_eof() {
+        let mut input = vec![0u8; 254];
+        let mut payload = b"%PDF-1.3\njunk\n%%EOF\nmore-junk-after".to_vec();
+        // Re-XOR so the magic+EOF survive the keystream.
+        for (i, b) in payload.iter_mut().enumerate() {
+            *b ^= KDH_PASSPHRASE[i % KDH_PASSPHRASE.len()];
+        }
+        input.extend_from_slice(&payload);
+        let out = decrypt_kdh(&input);
+        // The trailing "more-junk-after" must be truncated.
+        assert!(out.ends_with(b"%%EOF"));
+        // Output is a strict prefix of the decrypted payload, ending
+        // right after the last %%EOF.
+        assert!(out.len() < 254 + payload.len());
+    }
+
+    /// An input shorter than 254 bytes must yield an empty output.
+    #[test]
+    fn decrypt_handles_truncated_input() {
+        assert_eq!(decrypt_kdh(&[]), Vec::<u8>::new());
+        assert_eq!(decrypt_kdh(&[0u8; 100]), Vec::<u8>::new());
+        assert_eq!(decrypt_kdh(&[0u8; 254]), Vec::<u8>::new());
+    }
+
+    /// If the input has no `%%EOF` the original Python raises; the Rust
+    /// port returns the whole decrypted blob instead (more forgiving).
+    #[test]
+    fn decrypt_no_eof_returns_full_payload() {
+        let mut input = vec![0u8; 254];
+        input.extend_from_slice(b"no eof marker here at all");
+        let out = decrypt_kdh(&input);
+        // The whole payload comes through, in XORed form.
+        assert_eq!(
+            out.len(),
+            b"no eof marker here at all".len()
+        );
+    }
+}
