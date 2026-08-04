@@ -1,0 +1,24 @@
+# Rust
+target/
+**/*.rs.bk
+Cargo.lock
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+tests/samples/
+*.caj
+*.caj.tmp
+*.pdf.tmp
+/tmp_*
+test_*.pdf
+verify_out/
