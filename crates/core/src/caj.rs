@@ -107,11 +107,29 @@ pub(crate) fn extract_pdf(doc: &CajDocument) -> CajResult<Vec<u8>> {
     // building the PDF, and it keeps the code simple and correct.
     let bytes = std::fs::read(&doc.path)?;
     let endobj = b"endobj";
-    let pdf_end = bytes
+    let last_endobj = bytes
         .windows(endobj.len())
         .rposition(|w| w == endobj)
         .map(|p| p + endobj.len())
         .unwrap_or(bytes.len());
+
+    // If the slice after the last `endobj` contains an `xref` and a
+    // `%%EOF` marker, include them — the downstream lopdf parser needs
+    // the xref to read the PDF. Real CAJ files have neither (they store
+    // raw PDF objects only), so this branch is a no-op for them but
+    // helps callers that wrap a complete PDF in a CAJ container.
+    let after = &bytes[last_endobj.min(bytes.len())..];
+    let has_xref = after.windows(4).any(|w| w == b"xref");
+    let has_eof = after.windows(5).any(|w| w == b"%%EOF");
+    let pdf_end = if has_xref && has_eof {
+        bytes
+            .windows(5)
+            .rposition(|w| w == b"%%EOF")
+            .map(|p| p + 5)
+            .unwrap_or(last_endobj)
+    } else {
+        last_endobj
+    };
 
     if (pdf_start as usize) > pdf_end {
         return Err(CajError::malformed(
@@ -127,10 +145,18 @@ pub(crate) fn extract_pdf(doc: &CajDocument) -> CajResult<Vec<u8>> {
 
     // The original Python prepends a "%PDF-1.3\r\n" header and appends a
     // trailing "\r\n". We follow the same convention so downstream mutool /
-    // lopdf tooling sees a well-formed header.
+    // lopdf tooling sees a well-formed header — but we skip the prepend if
+    // the slice already starts with a %PDF- marker (this happens when the
+    // CAJ file was constructed from a real, full PDF rather than a header-
+    // less raw body).
     let mut out = Vec::with_capacity(pdf_data.len() + 16);
-    out.extend_from_slice(b"%PDF-1.3\r\n");
+    let already_has_header = pdf_data.starts_with(b"%PDF-");
+    if !already_has_header {
+        out.extend_from_slice(b"%PDF-1.3\r\n");
+    }
     out.extend_from_slice(pdf_data);
-    out.extend_from_slice(b"\r\n");
+    if !already_has_header {
+        out.extend_from_slice(b"\r\n");
+    }
     Ok(out)
 }

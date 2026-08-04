@@ -21,3 +21,6 @@ clap = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+lopdf = { version = "0.33", default-features = false, features = ["pom_parser", "default"] }

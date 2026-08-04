@@ -356,7 +356,7 @@ impl CajDocument {
 // Format detection helper (private)
 // ---------------------------------------------------------------------------
 
-pub(crate) mod convert;
+pub mod convert;
 
 mod caj;
 mod hn;
