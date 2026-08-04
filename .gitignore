@@ -22,3 +22,9 @@ tests/samples/
 /tmp_*
 test_*.pdf
 verify_out/
+
+# Build artifacts from subagent exploration (jbig2 header / static lib)
+/jbig2.h
+/libjbig2dec.a
+/libjbig2dec.so
+/crates/jbig2/include/
