@@ -196,11 +196,29 @@ fn convert_kdh(doc: &CajDocument, output: &Path) -> CajResult<()> {
     info!("decrypting KDH");
     let bytes = std::fs::read(doc.path())?;
     let decrypted = convert::decrypt_kdh(&bytes);
+
+    // Sanity-check the decrypted PDF. The KDH container holds a complete
+    // PDF (typically PDF 1.5+ with a cross-reference stream) so no
+    // additional xref repair is needed.
+    if !decrypted.starts_with(b"%PDF-") {
+        return Err(CajError::Malformed {
+            format: doc.format(),
+            message: "decrypted KDH does not start with %PDF- — wrong XOR key?".into(),
+        });
+    }
+    if !decrypted.windows(5).any(|w| w == b"%%EOF") {
+        return Err(CajError::Malformed {
+            format: doc.format(),
+            message: "decrypted KDH is missing %%EOF marker".into(),
+        });
+    }
+
     std::fs::write(output, &decrypted)?;
-    info!(file = %output.display(), "wrote decrypted PDF (xref repair TODO)");
-    // The original Python runs `mutool clean` after this; we could call
-    // lopdf to repair the xref as well, but that requires parsing the
-    // decrypted blob. For now we leave that to the user.
+    info!(
+        file = %output.display(),
+        bytes = decrypted.len(),
+        "wrote decrypted PDF"
+    );
     Ok(())
 }
 

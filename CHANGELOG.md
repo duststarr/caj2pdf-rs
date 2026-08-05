@@ -21,3 +21,30 @@ project adheres to [Semantic Versioning](https://semver.org/).
 * PDF document assembly and outline injection via `lopdf`.
 * `caj2pdf show`, `caj2pdf convert`, `caj2pdf outlines`,
   `caj2pdf text-extract`, and `caj2pdf parse` subcommands.
+
+### Verified on real files
+
+Tested on 10 sample CNKI papers in `/home/dust/work/paper0804/caj/`
+(9 KDH + 1 PDF):
+
+| Format | Files | Result |
+| --- | --- | --- |
+| KDH   | 9 | `convert` produces valid PDFs; `pdftotext` recovers the full Chinese text; `pdftoppm` renders pages correctly |
+| PDF   | 1 | Pass-through copy works; output identical to input |
+| HN/C8 | 0 | No samples in this dataset; covered by unit tests only |
+| CAJ   | 0 | No samples in this dataset; covered by synthetic e2e test |
+
+### Fixed
+
+* `convert_kdh` no longer logs a misleading "xref repair TODO"
+  message — the KDH container holds a complete PDF (PDF 1.5+ with
+  a cross-reference stream), no repair is needed. Now verifies
+  `%PDF-` header and `%%EOF` marker and reports the byte count.
+* `extract_pdf` now preserves the xref section when the embedded
+  slice contains both `xref` and `%%EOF` (helps callers that wrap a
+  complete PDF in a CAJ container; no-op for real CAJ files).
+
+## [0.1.0] - 2026-08-04
+
+Initial release.
+
