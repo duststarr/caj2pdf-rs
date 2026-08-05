@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/types",
     "crates/core",
     "crates/jbig1",
     "crates/jbig2",
@@ -19,7 +20,8 @@ description = "Pure-Rust reimplementation of the caj2pdf toolchain for convertin
 
 [workspace.dependencies]
 # Internal
-caj2pdf-core = { path = "crates/core" }
+caj2pdf-types = { path = "crates/types" }
+caj2pdf-core  = { path = "crates/core" }
 caj2pdf-jbig1 = { path = "crates/jbig1" }
 caj2pdf-jbig2 = { path = "crates/jbig2" }
 caj2pdf-pdf   = { path = "crates/pdf" }

@@ -12,3 +12,11 @@ encoding_rs = { workspace = true }
 flate2 = "1"
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+# Internal crates. `caj2pdf-types` holds the data types shared with
+# `caj2pdf-pdf`; the codec + PDF-assembly crates are pulled in by
+# `convert::convert`.
+caj2pdf-types = { workspace = true }
+caj2pdf-jbig1 = { workspace = true }
+caj2pdf-jbig2 = { workspace = true }
+caj2pdf-pdf   = { workspace = true }

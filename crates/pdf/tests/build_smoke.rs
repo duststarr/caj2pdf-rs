@@ -5,7 +5,7 @@
 //! them through `lopdf` to verify that the produced bytes are a
 //! well-formed PDF.
 
-use caj2pdf_core::{DecodedImage, OutlineEntry};
+use caj2pdf_types::{DecodedImage, OutlineEntry};
 use caj2pdf_pdf::{build_document, inject_outlines, PageInput};
 
 /// Build a synthetic 1-bpp mono bitmap filled with a single pattern.

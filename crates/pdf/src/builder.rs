@@ -6,7 +6,7 @@
 //! is responsible only for the caj2pdf-specific glue (image embedding,
 //! `/MediaBox` sizing, outline injection).
 
-use caj2pdf_core::DecodedImage;
+use caj2pdf_types::DecodedImage;
 use lopdf::{Dictionary, Document, Object, Stream};
 use tracing::warn;
 

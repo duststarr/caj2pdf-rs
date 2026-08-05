@@ -1,20 +1,30 @@
 //! High-level conversion entry point: turn a CAJ-family file into a PDF.
 //!
 //! This module is the single place that knows about every format. Other
-//! crates (e.g. the CLI) should call [`convert`] and let this module dispatch
-//! on the detected file format.
+//! crates (the CLI, the GUI, library users) should call [`convert`] and let
+//! this module dispatch on the detected file format.
+//!
+//! The full pipeline (xref repair, outline injection, JBIG/JPEG image
+//! decoding, PDF assembly) lives here so every front-end uses the same
+//! implementation.
 
 use std::path::Path;
 
-use crate::{CajDocument, CajError, CajResult, FileFormat};
+use tracing::{info, warn};
+
+use crate::{CajDocument, CajError, CajResult, DecodedImage, FileFormat, ImageKind, Page, RawImage};
+use caj2pdf_jbig1 as jbig1;
+use caj2pdf_jbig2 as jbig2;
+use caj2pdf_pdf::{self as pdf, PageInput};
 
 /// XOR key used by the KDH format's "encryption".
 pub const KDH_PASSPHRASE: &[u8] = b"FZHMEI";
 
-/// Convert an opened CAJ-family file to a PDF at `output`.
+/// Convert a CAJ-family file at `input` to a PDF at `output`.
 ///
-/// This is the high-level entry point used by the CLI. The per-format
-/// pipeline is:
+/// This is the **single high-level entry point** used by every front-end
+/// (the `caj2pdf` CLI, the `caj2pdf-gui` desktop app, and any future
+/// library consumer). The per-format pipeline is:
 ///
 /// * **CAJ** – extract the embedded PDF, repair its xref table, inject the
 ///   outline tree, write to `output`.
@@ -31,9 +41,9 @@ pub const KDH_PASSPHRASE: &[u8] = b"FZHMEI";
 /// # Errors
 /// See [`CajError`].
 pub fn convert(input: &Path, output: &Path) -> CajResult<()> {
-    tracing::info!(file = %input.display(), "opening input");
+    info!(file = %input.display(), "opening input");
     let doc = CajDocument::open(input)?;
-    tracing::info!(format = %doc.format(), "detected format");
+    info!(format = %doc.format(), "detected format");
 
     match doc.format() {
         FileFormat::Caj => convert_caj(&doc, output),
@@ -41,67 +51,188 @@ pub fn convert(input: &Path, output: &Path) -> CajResult<()> {
         FileFormat::Pdf => convert_pdf(&doc, output),
         FileFormat::Kdh => convert_kdh(&doc, output),
         FileFormat::Teb => Err(CajError::Unsupported(
-            "TEB format not yet implemented",
+            "TEB format is not yet implemented",
         )),
     }
 }
 
-fn convert_caj(doc: &CajDocument, output: &Path) -> CajResult<()> {
-    tracing::info!("extracting embedded PDF from CAJ container");
-    let pdf_bytes = doc.extract_pdf()?;
-    tracing::info!(bytes = pdf_bytes.len(), "embedded PDF extracted");
+// ---------------------------------------------------------------------------
+// CAJ: extract embedded PDF, repair xref, inject outlines
+// ---------------------------------------------------------------------------
 
-    // The CAJ PDF is typically missing a /Catalog and /Pages object. We
-    // delegate the xref repair + outline injection to a future integration
-    // agent. For now we just write the raw bytes out so the user can still
-    // see something.
+fn convert_caj(doc: &CajDocument, output: &Path) -> CajResult<()> {
+    info!("extracting embedded PDF from CAJ container");
+    let pdf_bytes = doc.extract_pdf()?;
+    info!(bytes = pdf_bytes.len(), "embedded PDF extracted");
+
+    // Load the broken PDF, re-save it (lopdf rebuilds the xref), and add the
+    // outline tree. caj2pdf-pdf::inject_outlines does the save+inject in
+    // one step.
+    let pdf_bytes = pdf::inject_outlines(&pdf_bytes, doc.toc()).map_err(|e| {
+        CajError::Malformed {
+            format: doc.format(),
+            message: format!("xref repair / outline injection failed: {e}"),
+        }
+    })?;
     std::fs::write(output, &pdf_bytes)?;
-    tracing::info!(file = %output.display(), "wrote CAJ PDF (xref repair TODO)");
+    info!(file = %output.display(), "wrote repaired PDF with outlines");
     Ok(())
 }
 
-fn convert_hn(_doc: &CajDocument, _output: &Path) -> CajResult<()> {
-    tracing::info!("iterating pages");
-    let pages = _doc.pages()?;
-    tracing::info!(count = pages.len(), "decoded page list");
+// ---------------------------------------------------------------------------
+// HN / C8: iterate pages, decode images, build PDF
+// ---------------------------------------------------------------------------
 
-    // For each page, decode the images and assemble a PDF.
-    //
-    // TODO(jbig1): call caj2pdf_jbig1::decode for ImageKind::Jbig1.
-    // TODO(jbig2): call caj2pdf_jbig2::decode for ImageKind::Jbig2.
-    // TODO(pdf):  assemble decoded images + text overlays via caj2pdf_pdf.
-    let _ = pages; // silence unused warning until the integration agent wires this up
-    unimplemented!(
-        "HN/C8 -> PDF conversion requires caj2pdf-jbig1, caj2pdf-jbig2, and caj2pdf-pdf"
-    );
-    // The integration agent will replace the `unimplemented!` with something
-    // like:
-    //     let mut page_inputs = Vec::with_capacity(pages.len());
-    //     for page in &pages {
-    //         for raw in &page.images {
-    //             let decoded = match raw.kind {
-    //                 ImageKind::Jbig1 => caj2pdf_jbig1::decode(...)?,
-    //                 ...
-    //             };
-    //             page_inputs.push(DecodedImage::Mono { ... });
-    //         }
-    //     }
-    //     let pdf = caj2pdf_pdf::build_document(&page_inputs, doc.toc())?;
-    //     std::fs::write(output, pdf)?;
+fn convert_hn(doc: &CajDocument, output: &Path) -> CajResult<()> {
+    info!("iterating pages");
+    let pages = doc.pages()?;
+    info!(count = pages.len(), "decoded page list");
+
+    let mut page_inputs = Vec::with_capacity(pages.len());
+    for (idx, page) in pages.iter().enumerate() {
+        info!(page = idx + 1, images = page.images.len(), "decoding page");
+        let decoded = decode_page(page)?;
+        if decoded.is_empty() {
+            warn!(page = idx + 1, "no decodable images on page, skipping");
+            continue;
+        }
+        // Use the first image as the page's primary content; multi-image
+        // pages are rare and the original Python project also collapses them
+        // to the first image when the layout is ambiguous.
+        let image = decoded.into_iter().next().expect("non-empty by check above");
+        page_inputs.push(PageInput {
+            image,
+            text_overlay: if page.text.is_empty() {
+                None
+            } else {
+                Some(page.text.clone())
+            },
+        });
+    }
+
+    if page_inputs.is_empty() {
+        return Err(CajError::Malformed {
+            format: doc.format(),
+            message: "file is pure-text; no images to embed".into(),
+        });
+    }
+
+    let pdf_bytes = pdf::build_document(&page_inputs, doc.toc()).map_err(|e| {
+        CajError::Malformed {
+            format: doc.format(),
+            message: format!("PDF build failed: {e}"),
+        }
+    })?;
+    std::fs::write(output, &pdf_bytes)?;
+    info!(file = %output.display(), pages = page_inputs.len(), "wrote PDF");
+    Ok(())
 }
 
+/// Decode every image on a page, returning the successfully decoded ones.
+fn decode_page(page: &Page) -> CajResult<Vec<DecodedImage>> {
+    let mut out = Vec::with_capacity(page.images.len());
+    for raw in &page.images {
+        match decode_image(raw) {
+            Ok(img) => out.push(img),
+            Err(e) => warn!(error = %e, "skipping undecodable image"),
+        }
+    }
+    Ok(out)
+}
+
+fn decode_image(raw: &RawImage) -> CajResult<DecodedImage> {
+    match raw.kind {
+        ImageKind::Jbig1 => {
+            let bmp = jbig1::decode(&raw.data, raw.width_px, raw.height_px)
+                .map_err(|e| CajError::Malformed {
+                    format: FileFormat::Hn,
+                    message: format!("JBIG1 decode failed: {e}"),
+                })?;
+            Ok(DecodedImage::Mono {
+                width_px: bmp.width,
+                height_px: bmp.height,
+                bits: bmp.bits,
+            })
+        }
+        ImageKind::Jbig2 => {
+            let bmp = jbig2::decode(&raw.data, raw.width_px, raw.height_px)
+                .map_err(|e| CajError::Malformed {
+                    format: FileFormat::Hn,
+                    message: format!("JBIG2 decode failed: {e}"),
+                })?;
+            Ok(DecodedImage::Mono {
+                width_px: bmp.width,
+                height_px: bmp.height,
+                bits: bmp.bits,
+            })
+        }
+        ImageKind::Jpeg { upside_down } => {
+            // The CNKI header (raw 0..48) stores width/height but in
+            // big-endian with negative-height for upside-down images. The
+            // 48-byte header is already inside raw.data; the rest is the
+            // JPEG stream, which the PDF layer parses via the SOF marker.
+            let height = if upside_down {
+                -(raw.height_px as i32) as i32 as u32
+            } else {
+                raw.height_px
+            };
+            const CNKI_HDR: usize = 48;
+            if raw.data.len() < CNKI_HDR {
+                return Err(CajError::Malformed {
+                    format: FileFormat::Hn,
+                    message: format!(
+                        "JPEG block is only {} bytes; need at least {}",
+                        raw.data.len(),
+                        CNKI_HDR
+                    ),
+                });
+            }
+            let jpeg_bytes = raw.data[CNKI_HDR..].to_vec();
+            Ok(DecodedImage::Jpeg {
+                width_px: raw.width_px,
+                height_px: height,
+                jpeg_bytes,
+            })
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PDF and KDH: pass-through and decrypt
+// ---------------------------------------------------------------------------
+
 fn convert_pdf(doc: &CajDocument, output: &Path) -> CajResult<()> {
-    tracing::info!("PDF pass-through, copying file");
+    info!("PDF pass-through, copying file");
     std::fs::copy(doc.path(), output)?;
     Ok(())
 }
 
 fn convert_kdh(doc: &CajDocument, output: &Path) -> CajResult<()> {
-    tracing::info!("decrypting KDH");
+    info!("decrypting KDH");
     let bytes = std::fs::read(doc.path())?;
     let decrypted = decrypt_kdh(&bytes);
+
+    // The KDH container holds a complete PDF (typically PDF 1.5+ with a
+    // cross-reference stream) so no additional xref repair is needed.
+    if !decrypted.starts_with(b"%PDF-") {
+        return Err(CajError::Malformed {
+            format: doc.format(),
+            message: "decrypted KDH does not start with %PDF- — wrong XOR key?".into(),
+        });
+    }
+    if !decrypted.windows(5).any(|w| w == b"%%EOF") {
+        return Err(CajError::Malformed {
+            format: doc.format(),
+            message: "decrypted KDH is missing %%EOF marker".into(),
+        });
+    }
+
     std::fs::write(output, &decrypted)?;
-    tracing::info!(file = %output.display(), "wrote decrypted PDF");
+    info!(
+        file = %output.display(),
+        bytes = decrypted.len(),
+        "wrote decrypted PDF"
+    );
     Ok(())
 }
 

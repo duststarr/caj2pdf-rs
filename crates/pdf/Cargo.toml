@@ -7,7 +7,7 @@ license.workspace = true
 description = "PDF document assembly and outline injection for caj2pdf-rs, using lopdf."
 
 [dependencies]
-caj2pdf-core = { workspace = true }
+caj2pdf-types = { workspace = true }
 lopdf = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

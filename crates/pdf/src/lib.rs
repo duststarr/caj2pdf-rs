@@ -28,7 +28,7 @@
 #![warn(unreachable_pub)]
 
 use thiserror::Error;
-use caj2pdf_core::{CajError, DecodedImage, OutlineEntry};
+use caj2pdf_types::{CajError, DecodedImage, OutlineEntry};
 
 pub mod builder;
 pub mod outlines;
