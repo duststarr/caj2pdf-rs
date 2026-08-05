@@ -1,6 +1,6 @@
 # caj2pdf-rs
 
-将知网（CNKI）的 CAJ / HN / C8 / KDH 格式文件转换为 PDF 的纯 Rust 工具。
+将知网（CNKI）的 CAJ / HN / C8 / KDH 格式文件转换为 PDF 的小工具。Rust 实现。
 
 ## 功能
 
@@ -45,4 +45,4 @@ caj2pdf outlines 论文.caj -o 打印版.pdf
 
 ## 许可
 
-GPL-2.0-or-later。JBIG1 解码器部分源自 FreeType 项目的 `JBigDecode.cc`。
+GPL-2.0-or-later。JBIG1 解码器部分源自 FreeType 项目的 `JBigDecode.cc：`。
