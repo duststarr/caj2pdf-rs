@@ -21,12 +21,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies (Ubuntu)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libjbig2dec0-dev pkg-config
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 

@@ -4,16 +4,9 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "JBIG2 decoder for caj2pdf-rs, using FFI to the system libjbig2dec library."
+description = "Pure-Rust JBIG2 decoder for caj2pdf-rs, using pdfluent-jbig2."
 
 [dependencies]
-libc = { workspace = true }
+pdfluent-jbig2 = "0.2"
 thiserror = { workspace = true }
 tracing = { workspace = true }
-
-[target.'cfg(unix)'.dependencies]
-# Used at build time to find libjbig2dec via pkg-config.
-
-[build]
-# Force re-run if the pkg-config probe changes.
-rustc-env = []

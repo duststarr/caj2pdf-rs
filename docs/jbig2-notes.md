@@ -1,10 +1,18 @@
 # JBIG2 decoder notes
 
-`caj2pdf-jbig2` is a thin safe-Rust wrapper over the system
-[`libjbig2dec`](https://github.com/ArtifexSoftware/jbig2dec) C
-library.  This document records the CAJ-specific quirks that the
-wrapper has to honour, plus the FFI calling convention we settled
-on.
+`caj2pdf-jbig2` is a thin safe-Rust wrapper over the pure-Rust
+[`pdfluent-jbig2`](https://crates.io/crates/pdfluent-jbig2) crate,
+which implements ITU-T T.88 (JBIG2) decoding with no C dependencies.
+This document records the CAJ-specific quirks the wrapper has to
+honour and how we bridge between the two APIs.
+
+## Why pure Rust?
+
+Earlier versions of this crate used FFI to the system `libjbig2dec`
+C library. That worked but required a C compiler, `pkg-config`, the
+`libjbig2dec0-dev` package, and shipping a `.so` / `.dylib` / `.dll`
+alongside the binary. The pure-Rust version removes all of that and
+collapses the build matrix to `cargo build` on any target.
 
 ## 1. The CNKI `CImage` 48-byte header
 

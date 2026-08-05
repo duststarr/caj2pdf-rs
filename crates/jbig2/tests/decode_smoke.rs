@@ -1,15 +1,16 @@
-//! Smoke tests for the caj2pdf-jbig2 FFI wrapper.
+//! Smoke tests for the caj2pdf-jbig2 pure-Rust wrapper.
 //!
-//! We don't try to round-trip a real JBIG2 bitstream through the
-//! decoder (that requires hand-crafting a valid page-info segment,
-//! a region segment, and an end-of-page segment, which is non-trivial
-//! and already covered by jbig2dec's own test harness).  Instead we
-//! verify:
+//! The pure-Rust pdfluent-jbig2 crate has its own exhaustive test
+//! suite, so we don't try to round-trip a real JBIG2 bitstream here
+//! either. Instead we verify:
 //!   1. The 48-byte CNKI header is honoured: a 47-byte input is
-//!      rejected with ShortInput before any FFI call.
-//!   2. The FFI link line works and the call sequence does not
-//!      segfault: garbage input produces a Jbig2Error.
+//!      rejected with ShortInput before any decoder call.
+//!   2. The link line works and the call sequence does not panic:
+//!      garbage input produces a Jbig2Error.
 //!   3. The Bitmap helper is sound.
+//!   4. A purely Rust build (no C compiler, no pkg-config, no
+//!      libjbig2dec) succeeds — this is the whole point of the
+//!      rewrite.
 
 use caj2pdf_jbig2::{decode, Bitmap, Jbig2Error};
 

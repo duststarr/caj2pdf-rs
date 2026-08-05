@@ -14,9 +14,10 @@
 ## 安装
 
 ```bash
-sudo apt install libjbig2dec0-dev pkg-config   # Debian / Ubuntu
 cargo build --release
 ```
+
+无外部依赖。JBIG1 / JBIG2 / PDF / zlib / GBK 解码全部纯 Rust 实现，二进制可直接 `cargo install` 或交叉编译到 macOS / Windows / Linux 任意目标。
 
 二进制：`target/release/caj2pdf`（约 2.7 MB）。
 

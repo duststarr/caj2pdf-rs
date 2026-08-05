@@ -7,13 +7,10 @@ How to set up a development environment, build, test, and contribute to
 
 * **Rust 1.74 or later** (the project uses edition 2021 and a few
   newer stable features). Install via [rustup](https://rustup.rs).
-* **Debian / Ubuntu** development packages:
-  ```bash
-  sudo apt install libjbig2dec0-dev pkg-config
-  ```
-* **(Optional) `mutool`** — only needed for repairing PDFs that you
-  hand-edit. The Rust code path does not call `mutool`; it uses
-  `lopdf` for everything.
+
+No C compiler, no system libraries, no `pkg-config`. Every codec
+(JBIG1, JBIG2, GBK, zlib, PDF) is implemented in pure Rust, so the
+toolchain is just `cargo build` and you're done.
 
 ## Initial build
 
