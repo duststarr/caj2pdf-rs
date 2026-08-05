@@ -1,0 +1,13 @@
+# Per-target cargo configuration.
+#
+# Without this, `cargo build --release -p caj2pdf-gui
+# --target x86_64-pc-windows-gnu` produces a console .exe that
+# pops up a black terminal window on top of the GUI. Setting the
+# `windows` subsystem via `-C link-arg=-mwindows` makes the .exe
+# a pure GUI application (no console allocation, no cmd window).
+
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "link-arg=-mwindows"]
+
+[target.i686-pc-windows-gnu]
+rustflags = ["-C", "link-arg=-mwindows"]
