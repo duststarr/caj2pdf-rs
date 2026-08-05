@@ -1,0 +1,26 @@
+[package]
+name = "caj2pdf-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Desktop GUI for caj2pdf-rs, built with egui/eframe."
+publish = false
+
+[lib]
+name = "caj2pdf_gui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "caj2pdf-gui"
+path = "src/main.rs"
+
+[dependencies]
+caj2pdf-core = { workspace = true }
+
+eframe = { version = "0.35", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+rfd = "0.15"
