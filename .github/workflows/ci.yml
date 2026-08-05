@@ -38,14 +38,21 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy (non-GUI crates)
+        run: cargo clippy --workspace --exclude caj2pdf-gui --all-targets -- -D warnings
 
       - name: Build
         run: cargo build --workspace --verbose
 
+      - name: Build GUI crate
+        # The GUI crate needs a display to run tests, so we only
+        # compile it in CI, not test it. Eframe's macros sometimes
+        # trip clippy lints, so we also exclude it from the clippy
+        # step above.
+        run: cargo build -p caj2pdf-gui --verbose
+
       - name: Test
-        run: cargo test --workspace --verbose
+        run: cargo test --workspace --exclude caj2pdf-gui --verbose
 
   rustfmt:
     name: rustfmt

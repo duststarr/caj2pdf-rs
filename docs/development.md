@@ -113,6 +113,32 @@ test(core): add format-detection tests for all 6 formats
 3. Tag with `vX.Y.Z` on `master`.
 4. `git push --tags`.
 
+## Building the desktop GUI
+
+```bash
+cargo build --release -p caj2pdf-gui
+```
+
+* **Linux**: needs X11 or Wayland runtime libraries. The `wayland` and
+  `x11` eframe features are both enabled by default, so it works on
+  both. No `libgtk`, no `libwebkit`.
+* **macOS**: no system deps. For a universal binary, build with
+  `cargo build --release --target universal2-apple-darwin -p caj2pdf-gui`.
+* **Windows**: no system deps. The default MSVC CRT is statically
+  linked.
+
+GUI tests are not run in CI (eframe needs a display); CI only
+compiles the crate. To run the GUI locally:
+
+```bash
+./target/release/caj2pdf-gui
+```
+
+The window opens, accepts dragged `.caj`/`.hn`/`.c8`/`.kdh`/`.pdf`
+files, and shows a status row per file (pending → running → done /
+error). "Convert all" spawns one thread per pending file; the UI
+stays responsive.
+
 ## Where to ask questions
 
 * Open a GitHub issue.

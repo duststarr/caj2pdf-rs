@@ -37,6 +37,16 @@ caj2pdf text-extract 论文.hn
 caj2pdf outlines 论文.caj -o 打印版.pdf
 ```
 
+## 桌面 GUI
+
+```bash
+cargo build --release -p caj2pdf-gui
+# 拖入 .caj / .hn / .c8 / .kdh / .pdf 文件，点 Convert all
+```
+
+二进制：`target/release/caj2pdf-gui`（约 16 MB，纯 Rust / egui）。
+Linux 需 X11 或 Wayland；macOS / Windows 无额外依赖。
+
 ## 致谢
 
 本项目是 [caj2pdf](https://github.com/JeziL/caj2pdf) 的 Rust 重写版本。
