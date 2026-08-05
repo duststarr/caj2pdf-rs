@@ -1,31 +1,55 @@
 # Cross-compilation
 
-This document records the cross-compilation setup for `caj2pdf-rs`.
+`caj2pdf-rs` is pure Rust with **no C dependencies at link time**
+(no FFI, no bindgen, no `*-sys` crates that link against C).
+The only system library it talks to at link time is libc, which the
+Rust toolchain can either dynamically link against the host's
+glibc/musl, or — for some targets — bundle statically. As a result,
+**any Rust target the toolchain supports should work**, modulo GUI
+dependencies.
 
-## Status matrix
+This document records the targets we have actually built and run,
+plus the setup steps each requires. CI currently tests
+`ubuntu-latest` only; the other two targets are verified manually.
 
-| Target | Binary | Size | Status | System deps |
-| --- | --- | --- | --- | --- |
-| `x86_64-unknown-linux-gnu` | `target/release/caj2pdf-gui` | 16 MB | ✅ | none (uses system glibc) |
-| `aarch64-unknown-linux-musl` | `target/aarch64-unknown-linux-musl/release/caj2pdf-gui` | 15 MB | ✅ **statically linked** | none (libc bundled) |
-| `x86_64-pc-windows-gnu` | `target/x86_64-pc-windows-gnu/release/caj2pdf-gui.exe` | 9.5 MB | ✅ **PE32+ GUI** | none (MinGW CRT statically linked) |
-| `x86_64-pc-windows-gnullvm` | — | — | not pursued; the gnu target works |
-| `aarch64-pc-windows-gnullvm` | — | — | not attempted |
+## Tested targets
 
-## Building
+| Target | Verified | How | Binary |
+|---|---|---|---|
+| `x86_64-unknown-linux-gnu` | CI + manual | default toolchain | `target/release/caj2pdf-gui` (~16 MB, links system glibc) |
+| `aarch64-unknown-linux-musl` | manual | `rustup target add`, lld wrapper | `target/aarch64-unknown-linux-musl/release/caj2pdf-gui` (~15 MB, **statically linked**) |
+| `x86_64-pc-windows-gnu` | manual | `rustup target add`, MinGW | `target/x86_64-pc-windows-gnu/release/caj2pdf-gui.exe` (~9.5 MB, **statically linked**, PE32+ GUI) |
 
-### Linux x86_64 (default)
+That's all the human verification we have today. Other targets
+(macOS, BSD, other Linux architectures, MSVC target, ...) are
+**expected to work** because all dependencies are pure Rust and
+either ship per-target support out of the box (eframe, lopdf,
+encoding_rs, flate2, pdfluent-jbig2) or have trivial builds. But
+they have not been tested; if you try one and it works (or
+doesn't), please open an issue.
+
+## Build commands
+
+### Linux x86_64 (host)
 
 ```bash
 cargo build --release -p caj2pdf-gui
-# → target/release/caj2pdf-gui
 ```
 
-### Linux aarch64 (Kylin / 麒麟 / any ARM Linux)
+### Linux aarch64 (Kylin / 麒麟 / 飞腾 / any ARM Linux)
+
+`aarch64-unknown-linux-musl` is the most portable target — the
+resulting binary has **no dynamic dependencies at all** and runs
+on any aarch64 Linux (glibc or musl-based) without installing
+anything.
 
 ```bash
 rustup target add aarch64-unknown-linux-musl
-# one-time: create the gcc-ism → lld wrapper
+
+# One-time: a small wrapper that strips gcc-isms so the bundled
+# LLVM lld can act as the linker. (lld doesn't understand
+# `-nostartfiles`, `-Bstatic`, etc. and refuses to find `-ldl`
+# in musl.)
 sudo tee /usr/local/bin/lld-aarch64-gnu.sh >/dev/null <<'EOF'
 #!/bin/sh
 args=""
@@ -41,62 +65,97 @@ exec /usr/bin/lld -flavor gnu $args
 EOF
 sudo chmod +x /usr/local/bin/lld-aarch64-gnu.sh
 
-# build
+# Build
 CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=/usr/local/bin/lld-aarch64-gnu.sh \
   cargo build --release -p caj2pdf-gui --target aarch64-unknown-linux-musl
-# → target/aarch64-unknown-linux-musl/release/caj2pdf-gui
 ```
 
-The wrapper strips gcc-specific flags and translates `-ldl` → `-lc`
-(musl has no separate libdl). The resulting binary is a **fully
-static** ARM aarch64 ELF that runs on Kylin V10/V11, Ubuntu ARM,
-UOS, or any aarch64 Linux without `apt install`.
+The resulting binary is **fully static** (verifiable with `file`:
+`statically linked`); copy it to any aarch64 Linux machine and run.
 
 ### Windows x86_64
 
+The Rust `x86_64-pc-windows-gnu` target needs MinGW binutils (for
+`dlltool`). On Debian / Ubuntu:
+
 ```bash
-sudo apt install mingw-w64            # provides x86_64-w64-mingw32-dlltool
+sudo apt install mingw-w64        # provides x86_64-w64-mingw32-dlltool
 rustup target add x86_64-pc-windows-gnu
 cargo build --release -p caj2pdf-gui --target x86_64-pc-windows-gnu
-# → target/x86_64-pc-windows-gnu/release/caj2pdf-gui.exe
 ```
 
 The output is a **PE32+ GUI executable** (no console window, opens
-a native window on double-click). The MinGW C runtime is
-statically linked, so the .exe runs on any Windows 7+ x64 system
-with no DLL dependencies.
+a native window on double-click). The MinGW import libraries are
+statically baked in, so the .exe runs on any Windows 7+ x64
+system with no DLL dependencies.
 
 The `.cargo/config.toml` in the repo root sets
-`rustflags = ["-C", "link-arg=-mwindows"]` for both windows-gnu
-targets, which is what makes the .exe a GUI application instead
-of a console one. Without this flag, a black cmd window would pop
+`rustflags = ["-C", "link-arg=-mwindows"]` for the windows-gnu
+target, which is what makes the .exe a GUI application instead of
+a console one. Without this flag, a black cmd window would pop
 up on launch.
 
 ## Pre-built binaries
 
-Latest release artifacts are in `dist/`:
+`dist/` ships the most recent build of the two manually-verified
+targets:
 
 | File | Target | Size | Run on |
 | --- | --- | --- | --- |
-| `dist/caj2pdf-gui-aarch64-kylin` | aarch64-unknown-linux-musl | 15 MB | Kylin, Ubuntu ARM, UOS, any aarch64 Linux |
+| `dist/caj2pdf-gui-aarch64-kylin` | aarch64-unknown-linux-musl | 15 MB | any aarch64 Linux (Kylin, Ubuntu ARM, UOS, …) |
 | `dist/caj2pdf-gui-x86_64-windows.exe` | x86_64-pc-windows-gnu | 9.5 MB | Windows 7+ x64 |
 
-The Linux binary is fully static (`file` reports `statically
-linked`); the Windows .exe is also static (MinGW import libraries
-baked in, no runtime DLL needed).
+These are convenience downloads for users who don't want to
+install a Rust toolchain. They are regenerated by hand (no
+release automation yet); the commit hash in `git log` is the
+source of truth.
 
-## Why the GUI is statically linked
+## Why the GUI can be statically linked
 
-`caj2pdf-rs` is 100 % pure Rust — no FFI, no C deps. (Earlier versions
-used `libjbig2dec` via FFI; that was replaced with the pure-Rust
-`pdfluent-jbig2` crate in v0.1.1.) The `eframe` GUI pulls in
-`winit`, `accesskit`, `glow`, etc., all pure Rust. So the only
-remaining C dependency at link time is the system libc, which the
-musl and MinGW targets provide statically.
+`caj2pdf-rs` itself is 100 % pure Rust: every codec, every
+parser, every error type is defined in this workspace. The only
+external crates with C dependencies are the GUI ecosystem:
+`eframe` (via `winit`), `accesskit`, `glow` (OpenGL bindings via
+`glutin`), `rfd` (file dialogs), and `tracing-subscriber`. All of
+these have pure-Rust builds and ship per-target.
 
-## What does NOT work in this sandbox (without sudo)
+The link-time C dependency is therefore only the **system libc**
+(and, on Windows, the MinGW C runtime). The `*-musl` and
+`*-windows-gnu` Rust targets both provide libc / CRT statically,
+which is why those two targets produce a single .exe / .elf file
+with no `.so` / `.dll` dependencies.
 
-The first attempt at Windows cross-compilation spent a long time
-trying workarounds for the missing `dlltool`. The fix was a single
-`sudo apt install mingw-w64`. Lesson: ask for the password before
-going down the workaround rabbit hole.
+## Likely-supported but untested targets
+
+We have not built and run on these, but they should work for the
+same reason as the three tested ones:
+
+| Target | Likely status | Notes |
+| --- | --- | --- |
+| `x86_64-apple-darwin` | works | eframe supports it, no C toolchain needed. |
+| `aarch64-apple-darwin` | works | Same. |
+| `x86_64-pc-windows-msvc` | works | MSVC link.exe produces the .exe; may need a `windows-sys` workaround for `raw-dylib`. |
+| `i686-unknown-linux-gnu` | works | 32-bit Linux host. |
+| `riscv64gc-unknown-linux-gnu` | works | RISC-V Linux. |
+| `loongarch64-unknown-linux-gnu` | works | Loongarch. |
+| FreeBSD, OpenBSD, NetBSD | works | Same deps, no special toolchain needed. |
+
+If you try one of these and it fails, open an issue with the
+target name and the error — the fix is usually just adding a
+platform-specific path in `crates/gui/src/font.rs` (CJK font
+locations differ) or a small `cfg` branch in the build.
+
+## Linux server / container compatibility
+
+`caj2pdf` (the CLI) has no GUI dependency and works in any
+container: scratch, alpine, distroless. The image just needs
+glibc or musl. For example:
+
+```dockerfile
+FROM gcr.io/distroless/cc-debian12
+COPY target/release/caj2pdf /usr/local/bin/
+ENTRYPOINT ["/usr/local/bin/caj2pdf"]
+```
+
+`caj2pdf-gui` (the GUI) needs a window server, so it doesn't fit
+in headless containers. For batch conversion, use the CLI.

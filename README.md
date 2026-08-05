@@ -35,23 +35,11 @@ caj2pdf outlines 论文.caj -o 打印版.pdf
 ./target/release/caj2pdf-gui
 ```
 
-## 跨平台
-
-支持三大平台，全静态或近全静态链接：
-
-| 目标 | 二进制大小 | 系统依赖 |
-|---|---|---|
-| Linux x86_64 | 16 MB | 系统 glibc |
-| Linux aarch64 (Kylin / ARM) | 15 MB, **全静态** | 零 |
-| Windows x86_64 (PE32+ GUI) | 9.5 MB, **全静态** | 零 |
-
-跨编命令、wrapper 脚本、预编译二进制见 [`docs/cross-compile.md`](docs/cross-compile.md)。
-
 ## 文档
 
-- [`docs/architecture.md`](docs/architecture.md) — 模块依赖图 + 端到端数据流图
+- [`docs/architecture.md`](docs/architecture.md) — 模块依赖图 + 数据流图
 - [`docs/format-analysis.md`](docs/format-analysis.md) — CAJ / HN / C8 / KDH 字节级格式
-- [`docs/cross-compile.md`](docs/cross-compile.md) — 跨平台构建 + 预编译二进制
+- [`docs/cross-compile.md`](docs/cross-compile.md) — 跨平台构建、依赖、预编译二进制
 - [`docs/development.md`](docs/development.md) — 开发流程、CI、git flow
 - [`docs/jbig1-reverse-notes.md`](docs/jbig1-reverse-notes.md) — JBIG1 逆向细节
 - [`docs/jbig2-notes.md`](docs/jbig2-notes.md) — JBIG2 走 `pdfluent-jbig2` 的说明
