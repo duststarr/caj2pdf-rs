@@ -15,13 +15,19 @@ fn main() -> eframe::Result {
         .try_init();
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([720.0, 480.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([760.0, 540.0])
+            .with_min_inner_size([560.0, 420.0]),
         ..Default::default()
     };
     eframe::run_native(
         "caj2pdf",
         options,
-        Box::new(|_cc| Ok(Box::new(App::default()))),
+        Box::new(|cc| {
+            // Install the CJK font (if found) before the first frame.
+            cc.egui_ctx.set_fonts(caj2pdf_gui::cjk_font_definitions());
+            Ok(Box::new(App::default()))
+        }),
     )
 }
 

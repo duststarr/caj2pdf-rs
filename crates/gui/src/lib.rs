@@ -7,4 +7,7 @@
 #![warn(unreachable_pub)]
 
 mod app;
+mod font;
+
 pub use app::{App, FileEntry, Status};
+pub use font::cjk_font_definitions;
